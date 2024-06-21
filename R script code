@@ -1,0 +1,207 @@
+library(shiny)
+library(shinythemes)
+library(DT)
+library(flextable)
+library(officer)
+
+# Define UI
+ui <- fluidPage(
+  theme = shinytheme("cosmo"),
+  tags$head(
+    tags$style(HTML("
+      body {
+        font-family: Arial, sans-serif;
+        background-color: #f5f5f5;
+      }
+      .panel-heading {
+        background-color: #2C3E50 !important;
+        color: white !important;
+      }
+      .panel-body {
+        background-color: #ECF0F1;
+      }
+      .form-control, .btn {
+        border-radius: 0px;
+      }
+      .btn-primary {
+        background-color: #2980B9;
+        border-color: #2980B9;
+      }
+      .btn-primary:hover {
+        background-color: #3498DB;
+        border-color: #3498DB;
+      }
+      .btn {
+        margin-top: 10px;
+      }
+      #allocationTable table {
+        width: 100% !important;
+        background-color: white;
+        border: 1px solid #ddd;
+        margin-top: 20px;
+      }
+      #allocationTable th {
+        background-color: #2980B9;
+        color: white;
+      }
+      #allocationTable td {
+        background-color: white;
+      }
+    "))
+  ),
+  titlePanel(tags$b("Random Allocator")),
+  sidebarLayout(
+    sidebarPanel(
+      tags$div(class = "panel panel-default",
+               tags$div(class = "panel-heading", "Allocation Settings"),
+               tags$div(class = "panel-body",
+                        textInput("studyID", "Study ID/Title", placeholder = "Enter study ID or title"),
+                        numericInput("numStudyGroups", "Number of Study Groups", value = 1, min = 1),
+                        numericInput("numControlGroups", "Number of Control Groups", value = 1, min = 1),
+                        numericInput("studySampleSize", "Required Sample Size for Study Group", value = 10, min = 1),
+                        numericInput("controlSampleSize", "Required Sample Size for Control Group", value = 10, min = 1),
+                        actionButton("allocate", "Allocate now", class = "btn btn-primary"),
+                        br(),
+                        downloadButton("downloadDataWord", "Download Data (Word)", class = "btn btn-primary")
+               )
+      )
+    ),
+    mainPanel(
+      tags$div(class = "panel panel-default",
+               tags$div(class = "panel-heading", "Allocation Table"),
+               tags$div(class = "panel-body",
+                        h4("Allocation Table"),
+                        DTOutput("allocationTable"),
+                        textOutput("result")
+               )
+      )
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  # Initialize a reactive value to store allocation results
+  allocations <- reactiveVal(data.frame(
+    Subject = character(), 
+    GroupType = character(), 
+    Group = character(), 
+    Timestamp = character(),
+    stringsAsFactors = FALSE
+  ))
+  
+  observeEvent(input$allocate, {
+    # Check if study ID is provided
+    if (is.null(input$studyID) || input$studyID == "") {
+      output$result <- renderText("Please enter a Study ID.")
+      return()
+    }
+    
+    # Define the groups
+    studyGroups <- paste("Study Group", 1:input$numStudyGroups)
+    controlGroups <- paste("Control Group", 1:input$numControlGroups)
+    
+    # Get current allocation counts
+    currentAllocations <- allocations()
+    studyCount <- sum(currentAllocations$GroupType == "Study")
+    controlCount <- sum(currentAllocations$GroupType == "Control")
+    
+    # Allocate subjects until required sample size is met for each group
+    while (studyCount < input$studySampleSize || controlCount < input$controlSampleSize) {
+      # Determine the allocation type randomly
+      if (studyCount < input$studySampleSize && controlCount < input$controlSampleSize) {
+        groupType <- sample(c("Study", "Control"), 1)
+      } else if (studyCount < input$studySampleSize) {
+        groupType <- "Study"
+      } else if (controlCount < input$controlSampleSize) {
+        groupType <- "Control"
+      }
+      
+      # Select a group within the chosen type
+      if (groupType == "Study") {
+        allocatedGroup <- sample(studyGroups, 1)
+      } else {
+        allocatedGroup <- sample(controlGroups, 1)
+      }
+      
+      # Generate a new subject ID
+      newSubject <- paste("Subject", nrow(currentAllocations) + 1)
+      
+      # Add timestamp
+      timestamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+      
+      # Update the allocations
+      newAllocation <- data.frame(
+        Subject = newSubject, 
+        GroupType = groupType, 
+        Group = allocatedGroup,
+        Timestamp = timestamp,
+        stringsAsFactors = FALSE
+      )
+      currentAllocations <- rbind(currentAllocations, newAllocation)
+      
+      # Update allocation counts
+      studyCount <- sum(currentAllocations$GroupType == "Study")
+      controlCount <- sum(currentAllocations$GroupType == "Control")
+    }
+    
+    # Update allocations
+    allocations(currentAllocations)
+    
+    # Display the result
+    output$result <- renderText("All groups have reached their required sample sizes.")
+  })
+  
+  # Render the allocation table
+  output$allocationTable <- renderDT({
+    datatable(allocations())
+  })
+  
+  # Download data in Word format
+  output$downloadDataWord <- downloadHandler(
+    filename = function() {
+      paste("allocation_data", Sys.Date(), ".docx", sep = "")
+    },
+    content = function(file) {
+      data <- allocations()
+      # Create a flextable
+      ft <- flextable(data)
+      # Style the table
+      ft <- ft %>%
+        theme_vanilla() %>%
+        set_header_labels(
+          Subject = "Subject ID",
+          GroupType = "Group Type",
+          Group = "Group",
+          Timestamp = "Timestamp"
+        ) %>%
+        autofit() %>%
+        bold(part = "header") %>%
+        bg(part = "header", bg = "#D3D3D3") %>%
+        border_outer(part = "all", border = fp_border(width = 1)) %>%
+        border_inner_h(part = "all", border = fp_border(width = 1))
+      
+      # Add title and date to the Word document
+      doc <- read_docx() %>%
+        body_add_par(value = "Allocation Data", style = "heading 1") %>%
+        body_add_par(value = paste("Study ID/Title:", input$studyID), style = "Normal") %>%
+        body_add_par(value = paste("Number of Study Groups:", input$numStudyGroups), style = "Normal") %>%
+        body_add_par(value = paste("Number of Control Groups:", input$numControlGroups), style = "Normal") %>%
+        body_add_par(value = paste("Sample Size for Study Group:", input$studySampleSize), style = "Normal") %>%
+        body_add_par(value = paste("Sample Size for Control Group:", input$controlSampleSize), style = "Normal") %>%
+        body_add_par(value = paste("Date:", Sys.Date()), style = "Normal") %>%
+        body_add_par(value = "") %>%
+        body_add_flextable(value = ft) %>%
+        body_add_par(value = "") %>%
+        body_add_par(value = "Generated by Random Allocator", style = "Normal") %>%
+        body_add_par(value = "") %>%
+        body_add_par(value = "Cite as: Sasidharan S, Gowardhan S. Random Allocator. Version 1.0. 2024. Accessed on [Date/ Month/ Year]", style = "Normal")
+      
+      # Save the Word document
+      print(doc, target = file)
+    }
+  )
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
